@@ -145,7 +145,7 @@
         <div class="section-heading">
           <div>
             <p class="eyebrow">Database online</p>
-            <h3>Cấu hình Google Apps Script</h3>
+            <h3>Cấu hình Script</h3>
           </div>
           <button class="icon-button" value="cancel" type="submit" aria-label="Đóng">x</button>
         </div>
@@ -154,11 +154,11 @@
           <input id="databaseEndpointInput" type="url" placeholder="https://script.google.com/macros/s/.../exec">
         </label>
         <p class="help-text">
-          Để trống nếu muốn dùng localStorage khi test. Khi có URL Apps Script,
-          app sẽ tải dữ liệu bằng JSONP và ghi dữ liệu lên Google Sheet.
+          Để trống nếu muốn dùng localStorage khi test. Khi có URL sẽ tải dữ liệu bằng JSONP và ghi dữ liệu lên Google Sheet.
         </p>
         <div class="form-actions">
           <button class="primary-button" id="saveSettingsButton" type="button">Lưu cấu hình</button>
+          <button class="ghost-button" id="copySetupLinkButton" type="button">Sao chép link thiết bị mới</button>
           <button class="ghost-button" id="clearSettingsButton" type="button">Dùng localStorage</button>
         </div>
         <p class="form-message" id="settingsMessage" role="status"></p>
@@ -179,7 +179,7 @@
           <input id="databasePasswordInput" type="password" autocomplete="off" required>
         </label>
         <p class="help-text">
-          Cấu hình database
+          Mật khẩu ......
         </p>
         <div class="form-actions">
           <button class="primary-button" id="unlockDatabaseButton" type="button">Mở cấu hình</button>

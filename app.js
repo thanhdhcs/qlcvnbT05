@@ -90,6 +90,7 @@ const elements = {
   databasePasswordMessage: document.querySelector("#databasePasswordMessage"),
   databaseEndpointInput: document.querySelector("#databaseEndpointInput"),
   saveSettingsButton: document.querySelector("#saveSettingsButton"),
+  copySetupLinkButton: document.querySelector("#copySetupLinkButton"),
   clearSettingsButton: document.querySelector("#clearSettingsButton"),
   settingsMessage: document.querySelector("#settingsMessage"),
   roleLabel: document.querySelector("#roleLabel"),
@@ -118,9 +119,13 @@ initializeApp();
 async function initializeApp() {
   bindEvents();
   setDefaultTaskDates();
+  const importedEndpoint = importDatabaseEndpointFromUrl();
 
   try {
     appState = await loadState();
+    if (importedEndpoint) {
+      showMessage(elements.loginMessage, "Đã nhận cấu hình database từ link thiết lập. Vui lòng đăng nhập.", "success");
+    }
   } catch (error) {
     console.error("Không tải được dữ liệu ban đầu", error);
     appState = loadLocalState();
@@ -145,6 +150,7 @@ function bindEvents() {
   elements.databasePasswordInput.addEventListener("keydown", handleDatabasePasswordKeydown);
   elements.databasePasswordDialog.addEventListener("close", resetDatabasePasswordDialog);
   elements.saveSettingsButton.addEventListener("click", saveSettings);
+  elements.copySetupLinkButton.addEventListener("click", copySetupLink);
   elements.clearSettingsButton.addEventListener("click", clearSettings);
   window.addEventListener("pagehide", handlePageExit);
   window.addEventListener("beforeunload", handlePageExit);
@@ -406,6 +412,24 @@ function saveSettings() {
 
   localStorage.setItem(STORAGE_KEYS.databaseEndpoint, endpoint);
   showMessage(elements.settingsMessage, "Đã lưu URL database. Bấm Đồng bộ để tải dữ liệu online.", "success");
+}
+
+async function copySetupLink() {
+  const endpoint = elements.databaseEndpointInput.value.trim() || getDatabaseEndpoint();
+  if (!endpoint) {
+    showMessage(elements.settingsMessage, "Vui lòng lưu Web app URL trước khi tạo link thiết bị mới.", "error");
+    return;
+  }
+
+  const setupLink = createSetupLink(endpoint);
+
+  try {
+    await copyTextToClipboard(setupLink);
+    showMessage(elements.settingsMessage, "Đã sao chép link thiết lập. Mở link này trên thiết bị mới để tự cấu hình đồng bộ.", "success");
+  } catch (error) {
+    console.error("Không sao chép được link thiết lập", error);
+    window.prompt("Sao chép link thiết lập này:", setupLink);
+  }
 }
 
 function clearSettings() {
@@ -784,6 +808,56 @@ function getSessionUser() {
 
 function getDatabaseEndpoint() {
   return localStorage.getItem(STORAGE_KEYS.databaseEndpoint) || "";
+}
+
+function importDatabaseEndpointFromUrl() {
+  const currentUrl = new URL(window.location.href);
+  const queryEndpoint = currentUrl.searchParams.get("db");
+  const hashParams = new URLSearchParams(currentUrl.hash.replace(/^#/, ""));
+  const hashEndpoint = hashParams.get("db");
+  const endpoint = queryEndpoint || hashEndpoint;
+
+  if (!endpoint) {
+    return false;
+  }
+
+  localStorage.setItem(STORAGE_KEYS.databaseEndpoint, endpoint);
+
+  currentUrl.searchParams.delete("db");
+  hashParams.delete("db");
+  const nextHash = hashParams.toString();
+  currentUrl.hash = nextHash ? `#${nextHash}` : "";
+  window.history.replaceState(null, document.title, currentUrl.toString());
+
+  return true;
+}
+
+function createSetupLink(endpoint) {
+  const setupUrl = new URL(window.location.href);
+  setupUrl.searchParams.delete("db");
+  setupUrl.hash = `db=${encodeURIComponent(endpoint)}`;
+  return setupUrl.toString();
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+
+  if (!copied) {
+    throw new Error("Clipboard copy failed.");
+  }
 }
 
 function isAdmin() {
