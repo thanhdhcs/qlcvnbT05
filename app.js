@@ -3,6 +3,7 @@
   session: "qlcv_session",
   databaseEndpoint: "qlcv_database_endpoint",
 };
+const FIREBASE_CONFIG = window.QLCV_FIREBASE_CONFIG || { enabled: false };
 
 const DEFAULT_STATE = {
   users: [
@@ -113,6 +114,7 @@ const elements = {
 let appState = cloneState(DEFAULT_STATE);
 let currentUser = null;
 let lastExitSyncAt = 0;
+let firebaseBackend = null;
 
 initializeApp();
 
@@ -120,10 +122,23 @@ async function initializeApp() {
   bindEvents();
   setDefaultTaskDates();
   const importedEndpoint = importDatabaseEndpointFromUrl();
+  firebaseBackend = await initializeFirebaseBackend();
 
   try {
-    appState = await loadState();
-    if (importedEndpoint) {
+    if (isFirebaseMode()) {
+      const authUser = await waitForFirebaseAuthState();
+      if (authUser) {
+        currentUser = await getFirebaseUserProfile(authUser);
+        appState = await loadState();
+      } else {
+        appState = loadLocalState();
+      }
+    } else {
+      appState = await loadState();
+      currentUser = getSessionUser();
+    }
+
+    if (importedEndpoint && !isFirebaseMode()) {
       showMessage(elements.loginMessage, "Đã nhận cấu hình database từ link thiết lập. Vui lòng đăng nhập.", "success");
     }
   } catch (error) {
@@ -132,7 +147,6 @@ async function initializeApp() {
     showMessage(elements.loginMessage, "Không tải được database online, đang dùng dữ liệu local.", "error");
   }
 
-  currentUser = getSessionUser();
   render();
 }
 
@@ -156,44 +170,202 @@ function bindEvents() {
   window.addEventListener("beforeunload", handlePageExit);
 }
 
+async function initializeFirebaseBackend() {
+  if (!isFirebaseConfigReady()) {
+    return null;
+  }
+
+  try {
+    const sdkVersion = FIREBASE_CONFIG.sdkVersion || "10.12.5";
+    const [{ initializeApp }, authModule, firestoreModule] = await Promise.all([
+      import(`https://www.gstatic.com/firebasejs/${sdkVersion}/firebase-app.js`),
+      import(`https://www.gstatic.com/firebasejs/${sdkVersion}/firebase-auth.js`),
+      import(`https://www.gstatic.com/firebasejs/${sdkVersion}/firebase-firestore.js`),
+    ]);
+
+    const app = initializeApp(FIREBASE_CONFIG.firebase);
+    const auth = authModule.getAuth(app);
+    const db = firestoreModule.getFirestore(app);
+
+    return {
+      app,
+      auth,
+      db,
+      authModule,
+      firestoreModule,
+      mode: "firebase",
+    };
+  } catch (error) {
+    console.error("Không khởi tạo được Firebase", error);
+    showMessage(elements.loginMessage, "Không khởi tạo được Firebase, app đang dùng localStorage.", "error");
+    return null;
+  }
+}
+
+function isFirebaseConfigReady() {
+  const config = FIREBASE_CONFIG.firebase || {};
+  return Boolean(
+    FIREBASE_CONFIG.enabled &&
+      config.apiKey &&
+      config.authDomain &&
+      config.projectId &&
+      config.appId,
+  );
+}
+
+function isFirebaseMode() {
+  return Boolean(firebaseBackend && firebaseBackend.mode === "firebase");
+}
+
+function waitForFirebaseAuthState() {
+  if (!isFirebaseMode()) {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    const unsubscribe = firebaseBackend.authModule.onAuthStateChanged(firebaseBackend.auth, (user) => {
+      unsubscribe();
+      resolve(user);
+    });
+  });
+}
+
+async function signInFirebaseUser(username, password) {
+  const email = getFirebaseEmailForUsername(username);
+  const credential = await firebaseBackend.authModule.signInWithEmailAndPassword(
+    firebaseBackend.auth,
+    email,
+    password,
+  );
+  return credential.user;
+}
+
+async function signOutFirebaseUser() {
+  if (!isFirebaseMode()) {
+    return;
+  }
+
+  await firebaseBackend.authModule.signOut(firebaseBackend.auth);
+}
+
+function getFirebaseEmailForUsername(username) {
+  const normalizedUsername = username.trim().toLowerCase();
+  const emailMap = FIREBASE_CONFIG.usernameEmails || {};
+  return emailMap[normalizedUsername] || username;
+}
+
+async function getFirebaseUserProfile(authUser) {
+  const { doc, getDoc } = firebaseBackend.firestoreModule;
+  const snapshot = await getDoc(doc(firebaseBackend.db, "users", authUser.uid));
+
+  if (!snapshot.exists()) {
+    const error = new Error(`Thiếu hồ sơ Firestore users/${authUser.uid}`);
+    error.code = "profile/not-found";
+    error.uid = authUser.uid;
+    throw error;
+  }
+
+  const data = snapshot.data();
+  return {
+    id: authUser.uid,
+    username: data.username || authUser.email || authUser.uid,
+    name: data.name || authUser.displayName || authUser.email || "Người dùng",
+    role: data.role === "admin" ? "admin" : "user",
+  };
+}
+
 async function handleLogin(event) {
   event.preventDefault();
   const username = elements.usernameInput.value.trim();
   const password = elements.passwordInput.value;
 
   try {
-    appState = await loadState();
-    const user = appState.users.find(
-      (item) => item.username === username && item.password === password,
-    );
+    let user;
+
+    if (isFirebaseMode()) {
+      const authUser = await signInFirebaseUser(username, password);
+      user = await getFirebaseUserProfile(authUser);
+      currentUser = user;
+      appState = await loadState();
+    } else {
+      appState = await loadState();
+      user = appState.users.find(
+        (item) => item.username === username && item.password === password,
+      );
+    }
 
     if (!user) {
-      showMessage(elements.loginMessage, "Sai tên đăng nhập hoặc mật khẩu.", "error");
+      showMessage(elements.loginMessage, getLoginErrorMessage(null, username), "error");
       return;
     }
 
-    currentUser = user;
-    localStorage.setItem(STORAGE_KEYS.session, user.id);
+    if (!isFirebaseMode()) {
+      currentUser = user;
+      localStorage.setItem(STORAGE_KEYS.session, user.id);
+    }
+
     elements.loginForm.reset();
     showMessage(elements.loginMessage, "");
     render();
   } catch (error) {
     console.error("Đăng nhập thất bại", error);
-    showMessage(elements.loginMessage, "Không thể đăng nhập. Vui lòng thử lại.", "error");
+    showMessage(elements.loginMessage, getLoginErrorMessage(error, username), "error");
   }
+}
+
+function getLoginErrorMessage(error, username) {
+  const code = error && error.code;
+
+  if (!isFirebaseMode() && username.includes("@")) {
+    return "Firebase chưa được bật hoặc cấu hình chưa đủ. Kiểm tra firebase-config.js.";
+  }
+
+  if (code === "auth/invalid-credential" || code === "auth/user-not-found" || code === "auth/wrong-password") {
+    return "Email hoặc mật khẩu Firebase không đúng. Kiểm tra user trong Firebase Authentication.";
+  }
+
+  if (code === "auth/invalid-email") {
+    return "Email không hợp lệ. Kiểm tra lại username/email trong firebase-config.js.";
+  }
+
+  if (code === "auth/unauthorized-domain") {
+    return "Domain website chưa được Firebase cho phép. Thêm domain trong Authentication > Settings > Authorized domains.";
+  }
+
+  if (code === "auth/too-many-requests") {
+    return "Firebase tạm khóa đăng nhập do thử sai nhiều lần. Chờ một lúc rồi thử lại.";
+  }
+
+  if (code === "auth/network-request-failed") {
+    return "Không kết nối được Firebase. Kiểm tra mạng hoặc cấu hình project.";
+  }
+
+  if (code === "profile/not-found") {
+    return `Thiếu hồ sơ phân quyền Firestore. Tạo collection users, document ID là UID: ${error.uid}.`;
+  }
+
+  return isFirebaseMode()
+    ? "Không đăng nhập được Firebase. Kiểm tra Authentication và Firestore user profile."
+    : "Sai tên đăng nhập hoặc mật khẩu.";
 }
 
 async function handleLogout() {
   const previousText = elements.logoutButton.textContent;
   elements.logoutButton.disabled = true;
-  elements.logoutButton.textContent = "Đang đồng bộ";
+  elements.logoutButton.textContent = isFirebaseMode() ? "Đang đăng xuất" : "Đang đồng bộ";
 
   try {
-    await persistState();
+    saveLocalState(normalizeState(appState));
+    if (!isFirebaseMode()) {
+      await persistState();
+    }
   } catch (error) {
     console.error("Không đồng bộ được khi đăng xuất", error);
-    alert("Không đồng bộ được database online. Dữ liệu vẫn đã lưu local trên trình duyệt này.");
+    alert(getSyncErrorMessage(error));
   } finally {
+    if (isFirebaseMode()) {
+      await signOutFirebaseUser();
+    }
     currentUser = null;
     localStorage.removeItem(STORAGE_KEYS.session);
     elements.logoutButton.disabled = false;
@@ -235,7 +407,12 @@ async function handleCreateTask(event) {
 
   try {
     appState.tasks.unshift(task);
-    await persistState();
+    if (isFirebaseMode()) {
+      saveLocalState(normalizeState(appState));
+      await createFirebaseTask(task);
+    } else {
+      await persistState();
+    }
     elements.taskForm.reset();
     setDefaultTaskDates();
     showMessage(elements.taskMessage, "Đã tạo công việc mới.", "success");
@@ -271,24 +448,31 @@ async function handleTaskUpdate(event) {
   }
 
   const now = new Date().toISOString();
-  task.progress = progress;
-  task.updatedAt = now;
-  appState.updates.unshift({
+  const update = {
     id: createId("update"),
     taskId,
     userId: currentUser.id,
     progress,
     note,
     createdAt: now,
-  });
+  };
+
+  task.progress = progress;
+  task.updatedAt = now;
+  appState.updates.unshift(update);
 
   try {
-    await persistState();
+    if (isFirebaseMode()) {
+      saveLocalState(normalizeState(appState));
+      await saveFirebaseTaskUpdate(task, update);
+    } else {
+      await persistState();
+    }
     render();
   } catch (error) {
     console.error("Không cập nhật được tiến độ", error);
     const message = form.querySelector(".form-message");
-    showMessage(message, "Không lưu được cập nhật. Vui lòng thử lại.", "error");
+    showMessage(message, getSyncErrorMessage(error), "error");
   }
 }
 
@@ -311,7 +495,7 @@ async function handleManualSync() {
     render();
   } catch (error) {
     console.error("Đồng bộ thất bại", error);
-    alert("Không đồng bộ được dữ liệu. Kiểm tra URL database hoặc mạng.");
+    alert(getSyncErrorMessage(error));
   } finally {
     elements.syncButton.disabled = false;
     elements.syncButton.textContent = "Đồng bộ";
@@ -443,7 +627,7 @@ function render() {
   elements.loginView.classList.toggle("hidden", isLoggedIn);
   elements.appView.classList.toggle("hidden", !isLoggedIn);
   elements.sessionActions.classList.toggle("hidden", !isLoggedIn);
-  elements.settingsButton.classList.toggle("hidden", !isAdmin());
+  elements.settingsButton.classList.toggle("hidden", !isAdmin() || isFirebaseMode());
 
   if (!isLoggedIn) {
     return;
@@ -639,6 +823,10 @@ function getTaskStatus(task) {
 }
 
 async function loadState() {
+  if (isFirebaseMode() && firebaseBackend.auth.currentUser) {
+    return loadFirebaseState();
+  }
+
   const endpoint = getDatabaseEndpoint();
   if (endpoint) {
     const remoteState = await loadRemoteState(endpoint);
@@ -670,12 +858,84 @@ async function persistState() {
   const stateToSave = normalizeState(appState);
   saveLocalState(stateToSave);
 
+  if (isFirebaseMode() && firebaseBackend.auth.currentUser) {
+    await saveFirebaseState(stateToSave);
+    return;
+  }
+
   const endpoint = getDatabaseEndpoint();
   if (!endpoint) {
     return;
   }
 
   await saveRemoteState(endpoint, stateToSave);
+}
+
+async function loadFirebaseState() {
+  const { collection, getDocs, query, where } = firebaseBackend.firestoreModule;
+  const isCurrentAdmin = isAdmin();
+  const taskSource = isCurrentAdmin
+    ? collection(firebaseBackend.db, "tasks")
+    : query(collection(firebaseBackend.db, "tasks"), where("assigneeId", "==", currentUser.id));
+  const updateSource = isCurrentAdmin
+    ? collection(firebaseBackend.db, "updates")
+    : query(collection(firebaseBackend.db, "updates"), where("userId", "==", currentUser.id));
+  const [usersSnapshot, tasksSnapshot, updatesSnapshot] = await Promise.all([
+    getDocs(collection(firebaseBackend.db, "users")),
+    getDocs(taskSource),
+    getDocs(updateSource),
+  ]);
+
+  return normalizeState({
+    users: usersSnapshot.docs.map((snapshot) => ({
+      id: snapshot.id,
+      ...snapshot.data(),
+    })),
+    tasks: tasksSnapshot.docs.map((snapshot) => ({
+      id: snapshot.id,
+      ...snapshot.data(),
+    })),
+    updates: updatesSnapshot.docs.map((snapshot) => ({
+      id: snapshot.id,
+      ...snapshot.data(),
+    })),
+  });
+}
+
+async function saveFirebaseState(state) {
+  const { doc, setDoc } = firebaseBackend.firestoreModule;
+  const tasks = state.tasks.map((task) => (
+    setDoc(doc(firebaseBackend.db, "tasks", task.id), sanitizeFirestoreRecord(task), { merge: true })
+  ));
+  const updates = state.updates.map((update) => (
+    setDoc(doc(firebaseBackend.db, "updates", update.id), sanitizeFirestoreRecord(update), { merge: true })
+  ));
+
+  await Promise.all([...tasks, ...updates]);
+}
+
+async function createFirebaseTask(task) {
+  const { doc, setDoc } = firebaseBackend.firestoreModule;
+  await setDoc(doc(firebaseBackend.db, "tasks", task.id), sanitizeFirestoreRecord(task));
+}
+
+async function saveFirebaseTaskUpdate(task, update) {
+  const { doc, writeBatch } = firebaseBackend.firestoreModule;
+  const batch = writeBatch(firebaseBackend.db);
+
+  batch.update(doc(firebaseBackend.db, "tasks", task.id), {
+    progress: task.progress,
+    updatedAt: task.updatedAt,
+  });
+  batch.set(doc(firebaseBackend.db, "updates", update.id), sanitizeFirestoreRecord(update));
+
+  await batch.commit();
+}
+
+function sanitizeFirestoreRecord(record) {
+  return Object.fromEntries(
+    Object.entries(record).filter(([, value]) => value !== undefined),
+  );
 }
 
 function syncStateBeforeExit() {
@@ -687,6 +947,10 @@ function syncStateBeforeExit() {
 
   const stateToSave = normalizeState(appState);
   saveLocalState(stateToSave);
+
+  if (isFirebaseMode()) {
+    return;
+  }
 
   const endpoint = getDatabaseEndpoint();
   if (!endpoint) {
@@ -887,6 +1151,26 @@ function showMessage(element, text, type = "") {
   if (type) {
     element.classList.add(type);
   }
+}
+
+function getSyncErrorMessage(error) {
+  const code = error && error.code;
+
+  if (code === "permission-denied" || code === "firestore/permission-denied") {
+    return "Firebase từ chối quyền ghi dữ liệu. Kiểm tra Firestore Rules và hồ sơ users/{UID} có role đúng.";
+  }
+
+  if (code === "unavailable" || code === "firestore/unavailable" || code === "auth/network-request-failed") {
+    return "Không kết nối được database online. Kiểm tra mạng Internet rồi thử lại.";
+  }
+
+  if (code === "not-found" || code === "firestore/not-found") {
+    return "Không tìm thấy dữ liệu cần cập nhật trên Firebase. Bấm Đồng bộ rồi thử lại.";
+  }
+
+  return isFirebaseMode()
+    ? "Không đồng bộ được Firebase. Dữ liệu vẫn đã lưu local trên trình duyệt này."
+    : "Không đồng bộ được database online. Dữ liệu vẫn đã lưu local trên trình duyệt này.";
 }
 
 function formatDate(value) {
