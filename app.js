@@ -459,6 +459,7 @@ async function handleTaskUpdate(event) {
 
   task.progress = progress;
   task.updatedAt = now;
+  task.completedAt = progress >= 100 ? task.completedAt || now : null;
   appState.updates.unshift(update);
 
   try {
@@ -926,6 +927,7 @@ async function saveFirebaseTaskUpdate(task, update) {
   batch.update(doc(firebaseBackend.db, "tasks", task.id), {
     progress: task.progress,
     updatedAt: task.updatedAt,
+    completedAt: task.completedAt,
   });
   batch.set(doc(firebaseBackend.db, "updates", update.id), sanitizeFirestoreRecord(update));
 
