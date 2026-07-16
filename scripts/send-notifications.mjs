@@ -49,7 +49,11 @@ async function main() {
     const sentChannels = await sendAlert(alert);
     if (!sentChannels.length) {
       skippedCount += 1;
-      console.log(`Skipped ${alert.id}: missing Telegram chat id or email configuration.`);
+      console.log(
+        `Skipped ${alert.id}: missing Telegram chat id or email configuration. `
+          + `assigneeId=${alert.assignee.id}, username=${alert.assignee.username || "empty"}, `
+          + `hasTelegram=${Boolean(getTelegramChatId(alert.assignee))}, hasEmail=${Boolean(alert.assignee.email)}`,
+      );
       continue;
     }
 
@@ -62,7 +66,12 @@ async function main() {
 }
 
 function buildAlerts(task, assignee) {
-  if (!assignee || Number(task.progress || 0) >= 100) {
+  if (!assignee) {
+    console.log(`Skipped task ${task.id}: assignee user not found. assigneeId=${task.assigneeId || "empty"}`);
+    return [];
+  }
+
+  if (Number(task.progress || 0) >= 100) {
     return [];
   }
 
@@ -131,7 +140,13 @@ async function sendAlert(alert) {
 }
 
 function getTelegramChatId(user) {
-  return user.telegramChatId || user.telegramChatID || "";
+  const directValue = user.telegramChatId || user.telegramChatID || user.telegram_chat_id;
+  if (directValue) {
+    return String(directValue).trim();
+  }
+
+  const matchedKey = Object.keys(user).find((key) => key.toLowerCase() === "telegramchatid");
+  return matchedKey ? String(user[matchedKey]).trim() : "";
 }
 
 async function sendTelegram(chatId, text) {
