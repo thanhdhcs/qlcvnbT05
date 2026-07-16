@@ -140,12 +140,19 @@ async function sendAlert(alert) {
 }
 
 function getTelegramChatId(user) {
-  const directValue = user.telegramChatId || user.telegramChatID || user.telegram_chat_id;
+  const directValue = user.telegramChatId
+    || user.telegramChatID
+    || user.telegramId
+    || user.telegramID
+    || user.chatId
+    || user.chatID
+    || user.telegram_chat_id;
   if (directValue) {
     return String(directValue).trim();
   }
 
-  const matchedKey = Object.keys(user).find((key) => key.toLowerCase() === "telegramchatid");
+  const supportedKeys = new Set(["telegramchatid", "telegramid", "chatid"]);
+  const matchedKey = Object.keys(user).find((key) => supportedKeys.has(key.toLowerCase()));
   return matchedKey ? String(user[matchedKey]).trim() : "";
 }
 
