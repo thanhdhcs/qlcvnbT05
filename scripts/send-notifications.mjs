@@ -113,10 +113,11 @@ function createAlert(type, task, assignee, title, dateKey = "") {
 
 async function sendAlert(alert) {
   const sentChannels = [];
-  const hasTelegram = Boolean(CONFIG.telegramBotToken && alert.assignee.telegramChatId);
+  const telegramChatId = getTelegramChatId(alert.assignee);
+  const hasTelegram = Boolean(CONFIG.telegramBotToken && telegramChatId);
 
   if (hasTelegram) {
-    await sendTelegram(alert.assignee.telegramChatId, alert.message);
+    await sendTelegram(telegramChatId, alert.message);
     sentChannels.push("telegram");
   }
 
@@ -127,6 +128,10 @@ async function sendAlert(alert) {
   }
 
   return sentChannels;
+}
+
+function getTelegramChatId(user) {
+  return user.telegramChatId || user.telegramChatID || "";
 }
 
 async function sendTelegram(chatId, text) {
