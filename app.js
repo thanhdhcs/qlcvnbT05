@@ -71,6 +71,7 @@ const DEFAULT_STATE = {
       createdAt: new Date().toISOString(),
     },
   ],
+  taskLogs: [],
 };
 
 const elements = {
@@ -155,6 +156,7 @@ function bindEvents() {
   elements.logoutButton.addEventListener("click", handleLogout);
   elements.taskForm.addEventListener("submit", handleCreateTask);
   elements.taskList.addEventListener("submit", handleTaskUpdate);
+  elements.taskList.addEventListener("click", handleTaskAction);
   elements.taskList.addEventListener("input", handleProgressPreview);
   elements.searchInput.addEventListener("input", renderTaskList);
   elements.statusFilter.addEventListener("change", renderTaskList);
@@ -440,6 +442,7 @@ async function handleTaskUpdate(event) {
   const noteInput = form.querySelector("[name='note']");
   const progress = clamp(Number(progressInput.value), 0, 100);
   const note = noteInput.value.trim();
+  const wasOverdue = getTaskStatus(task).key === "overdue";
 
   if (!note) {
     const message = form.querySelector(".form-message");
@@ -462,10 +465,19 @@ async function handleTaskUpdate(event) {
   task.completedAt = progress >= 100 ? task.completedAt || now : null;
   appState.updates.unshift(update);
 
+  const taskLog = progress >= 100 && wasOverdue
+    ? createTaskLog("overdue-task-completed", task, currentUser, {
+      id: `${task.id}_overdue-task-completed`,
+      completedAt: task.completedAt,
+      note,
+    })
+    : null;
+  addLocalTaskLog(taskLog);
+
   try {
     if (isFirebaseMode()) {
       saveLocalState(normalizeState(appState));
-      await saveFirebaseTaskUpdate(task, update);
+      await saveFirebaseTaskUpdate(task, update, taskLog);
     } else {
       await persistState();
     }
@@ -474,6 +486,57 @@ async function handleTaskUpdate(event) {
     console.error("Không cập nhật được tiến độ", error);
     const message = form.querySelector(".form-message");
     showMessage(message, getSyncErrorMessage(error), "error");
+  }
+}
+
+async function handleTaskAction(event) {
+  const deleteButton = event.target.closest("[data-action='delete-task']");
+  if (!deleteButton) {
+    return;
+  }
+
+  await handleDeleteTask(deleteButton.dataset.taskId);
+}
+
+async function handleDeleteTask(taskId) {
+  if (!isAdmin()) {
+    return;
+  }
+
+  const task = appState.tasks.find((item) => item.id === taskId);
+  if (!task) {
+    return;
+  }
+
+  const confirmed = window.confirm(`Xoá công việc "${task.title}"? Hành động này sẽ được ghi log KPI.`);
+  if (!confirmed) {
+    return;
+  }
+
+  const taskLog = createTaskLog("task-deleted", task, currentUser, {
+    id: `${task.id}_task-deleted_${Date.now()}`,
+    deletedAt: new Date().toISOString(),
+  });
+  const previousTasks = [...appState.tasks];
+  const previousTaskLogs = [...(appState.taskLogs || [])];
+
+  try {
+    appState.tasks = appState.tasks.filter((item) => item.id !== task.id);
+    addLocalTaskLog(taskLog);
+
+    if (isFirebaseMode()) {
+      saveLocalState(normalizeState(appState));
+      await deleteFirebaseTask(task, taskLog);
+    } else {
+      await persistState();
+    }
+
+    render();
+  } catch (error) {
+    appState.tasks = previousTasks;
+    appState.taskLogs = previousTaskLogs;
+    console.error("Không xoá được công việc", error);
+    alert(getSyncErrorMessage(error));
   }
 }
 
@@ -712,9 +775,11 @@ function renderTaskCard(task) {
     .filter((update) => update.taskId === task.id)
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   const canUpdate = currentUser.role === "user" && task.assigneeId === currentUser.id;
+  const canDelete = currentUser.role === "admin";
 
   return `
     <article class="task-card">
+      ${canDelete ? renderTaskAdminActions(task) : ""}
       <div class="task-main">
         <div>
           <div class="task-title-row">
@@ -755,6 +820,16 @@ function renderTaskCard(task) {
         </div>
       </div>
     </article>
+  `;
+}
+
+function renderTaskAdminActions(task) {
+  return `
+    <div class="task-admin-actions">
+      <button class="danger-button compact-button" type="button" data-action="delete-task" data-task-id="${escapeHtml(task.id)}">
+        Xoá công việc
+      </button>
+    </div>
   `;
 }
 
@@ -881,11 +956,15 @@ async function loadFirebaseState() {
   const updateSource = isCurrentAdmin
     ? collection(firebaseBackend.db, "updates")
     : query(collection(firebaseBackend.db, "updates"), where("userId", "==", currentUser.id));
+  const taskLogSource = isCurrentAdmin
+    ? collection(firebaseBackend.db, "taskLogs")
+    : query(collection(firebaseBackend.db, "taskLogs"), where("assigneeId", "==", currentUser.id));
   const [usersSnapshot, tasksSnapshot, updatesSnapshot] = await Promise.all([
     getDocs(collection(firebaseBackend.db, "users")),
     getDocs(taskSource),
     getDocs(updateSource),
   ]);
+  const taskLogsSnapshot = await getOptionalFirebaseDocs(taskLogSource, "Không tải được taskLogs KPI");
 
   return normalizeState({
     users: usersSnapshot.docs.map((snapshot) => ({
@@ -900,7 +979,23 @@ async function loadFirebaseState() {
       id: snapshot.id,
       ...snapshot.data(),
     })),
+    taskLogs: taskLogsSnapshot.map((snapshot) => ({
+      id: snapshot.id,
+      ...snapshot.data(),
+    })),
   });
+}
+
+async function getOptionalFirebaseDocs(source, message) {
+  const { getDocs } = firebaseBackend.firestoreModule;
+
+  try {
+    const snapshot = await getDocs(source);
+    return snapshot.docs;
+  } catch (error) {
+    console.warn(message, error);
+    return [];
+  }
 }
 
 async function saveFirebaseState(state) {
@@ -911,8 +1006,11 @@ async function saveFirebaseState(state) {
   const updates = state.updates.map((update) => (
     setDoc(doc(firebaseBackend.db, "updates", update.id), sanitizeFirestoreRecord(update), { merge: true })
   ));
+  const taskLogs = (state.taskLogs || []).map((taskLog) => (
+    setDoc(doc(firebaseBackend.db, "taskLogs", taskLog.id), sanitizeFirestoreRecord(taskLog), { merge: true })
+  ));
 
-  await Promise.all([...tasks, ...updates]);
+  await Promise.all([...tasks, ...updates, ...taskLogs]);
 }
 
 async function createFirebaseTask(task) {
@@ -920,7 +1018,7 @@ async function createFirebaseTask(task) {
   await setDoc(doc(firebaseBackend.db, "tasks", task.id), sanitizeFirestoreRecord(task));
 }
 
-async function saveFirebaseTaskUpdate(task, update) {
+async function saveFirebaseTaskUpdate(task, update, taskLog = null) {
   const { doc, writeBatch } = firebaseBackend.firestoreModule;
   const batch = writeBatch(firebaseBackend.db);
 
@@ -931,7 +1029,35 @@ async function saveFirebaseTaskUpdate(task, update) {
   });
   batch.set(doc(firebaseBackend.db, "updates", update.id), sanitizeFirestoreRecord(update));
 
+  if (taskLog) {
+    batch.set(doc(firebaseBackend.db, "taskLogs", taskLog.id), sanitizeFirestoreRecord(taskLog), { merge: true });
+  }
+
   await batch.commit();
+}
+
+async function deleteFirebaseTask(task, taskLog) {
+  const { deleteDoc, doc, writeBatch } = firebaseBackend.firestoreModule;
+
+  if (writeBatch) {
+    const batch = writeBatch(firebaseBackend.db);
+    batch.set(doc(firebaseBackend.db, "taskLogs", taskLog.id), sanitizeFirestoreRecord(taskLog));
+    batch.delete(doc(firebaseBackend.db, "tasks", task.id));
+    await batch.commit();
+    return;
+  }
+
+  await saveFirebaseTaskLog(taskLog);
+  await deleteDoc(doc(firebaseBackend.db, "tasks", task.id));
+}
+
+async function saveFirebaseTaskLog(taskLog) {
+  if (!taskLog) {
+    return;
+  }
+
+  const { doc, setDoc } = firebaseBackend.firestoreModule;
+  await setDoc(doc(firebaseBackend.db, "taskLogs", taskLog.id), sanitizeFirestoreRecord(taskLog), { merge: true });
 }
 
 function sanitizeFirestoreRecord(record) {
@@ -1060,6 +1186,7 @@ function normalizeState(value) {
     users: Array.isArray(safeState.users) && safeState.users.length ? safeState.users : cloneState(DEFAULT_STATE).users,
     tasks: Array.isArray(safeState.tasks) ? safeState.tasks : [],
     updates: Array.isArray(safeState.updates) ? safeState.updates : [],
+    taskLogs: Array.isArray(safeState.taskLogs) ? safeState.taskLogs : [],
   };
 }
 
@@ -1132,6 +1259,47 @@ function isAdmin() {
 
 function findUser(userId) {
   return appState.users.find((user) => user.id === userId);
+}
+
+function createTaskLog(action, task, actor, extra = {}) {
+  const assignee = findUser(task.assigneeId);
+  const createdAt = extra.createdAt || new Date().toISOString();
+
+  return {
+    id: extra.id || `${task.id}_${action}`,
+    action,
+    taskId: task.id,
+    taskTitle: task.title,
+    taskDescription: task.description || "",
+    assigneeId: task.assigneeId,
+    assigneeName: assignee?.name || assignee?.username || task.assigneeId,
+    actorId: actor?.id || "system",
+    actorName: actor?.name || actor?.username || "Hệ thống",
+    dueDate: task.dueDate,
+    startDate: task.startDate,
+    progress: Number(task.progress || 0),
+    createdAt,
+    eventDate: toDateInput(new Date(createdAt)),
+    completedAt: extra.completedAt || null,
+    deletedAt: extra.deletedAt || null,
+    note: extra.note || "",
+    taskSnapshot: sanitizeFirestoreRecord({ ...task }),
+  };
+}
+
+function addLocalTaskLog(taskLog) {
+  if (!taskLog) {
+    return;
+  }
+
+  appState.taskLogs = appState.taskLogs || [];
+  const existingIndex = appState.taskLogs.findIndex((item) => item.id === taskLog.id);
+  if (existingIndex >= 0) {
+    appState.taskLogs[existingIndex] = taskLog;
+    return;
+  }
+
+  appState.taskLogs.unshift(taskLog);
 }
 
 function setDefaultTaskDates() {

@@ -597,7 +597,20 @@ code {
 }
 
 .task-card {
+  position: relative;
   padding: 18px;
+}
+
+.task-admin-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.compact-button {
+  min-height: 34px;
+  padding: 8px 12px;
+  font-size: 0.82rem;
 }
 
 .task-main {
