@@ -703,6 +703,11 @@ code {
   background: var(--success);
 }
 
+.pill.done-overdue {
+  color: #fff;
+  background: #d97706;
+}
+
 .pill.active {
   color: #fff;
   background: var(--info);
@@ -849,6 +854,20 @@ input[type="range"] {
 
 .data-table tr:last-child td {
   border-bottom: 0;
+}
+
+.report-summary-table {
+  min-width: 620px;
+}
+
+.report-task-table {
+  min-width: 1080px;
+}
+
+.table-subtext {
+  margin: 5px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
 }
 
 .user-stats-list {

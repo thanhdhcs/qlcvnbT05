@@ -85,6 +85,7 @@
             <button class="tab-button active" type="button" data-page="tasks">Công việc</button>
             <button class="tab-button admin-only" type="button" data-page="adminLogs">Log admin</button>
             <button class="tab-button" type="button" data-page="userStats">Thống kê user</button>
+            <button class="tab-button" type="button" data-page="timeReport">Báo cáo thời gian</button>
           </nav>
 
           <section class="workspace-page" id="tasksPage" data-page-panel="tasks">
@@ -163,6 +164,31 @@
               </div>
             </div>
             <div class="user-stats-list" id="userStatsList"></div>
+          </section>
+
+          <section class="workspace-page hidden" id="timeReportPage" data-page-panel="timeReport" aria-labelledby="timeReportTitle">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Báo cáo</p>
+                <h3 id="timeReportTitle">Thống kê đầu việc theo thời gian</h3>
+              </div>
+              <div class="filter-row report-filter-row">
+                <label>
+                  Từ ngày
+                  <input id="reportFromInput" type="date">
+                </label>
+                <label>
+                  Đến ngày
+                  <input id="reportToInput" type="date">
+                </label>
+                <label class="admin-only">
+                  User
+                  <select id="reportUserFilter"></select>
+                </label>
+              </div>
+            </div>
+            <div class="data-table-wrap" id="reportSummaryTable"></div>
+            <div class="data-table-wrap" id="reportTaskTable"></div>
           </section>
         </section>
       </main>

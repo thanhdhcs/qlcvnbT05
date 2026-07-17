@@ -115,6 +115,11 @@ const elements = {
   taskList: document.querySelector("#taskList"),
   adminLogList: document.querySelector("#adminLogList"),
   userStatsList: document.querySelector("#userStatsList"),
+  reportFromInput: document.querySelector("#reportFromInput"),
+  reportToInput: document.querySelector("#reportToInput"),
+  reportUserFilter: document.querySelector("#reportUserFilter"),
+  reportSummaryTable: document.querySelector("#reportSummaryTable"),
+  reportTaskTable: document.querySelector("#reportTaskTable"),
 };
 
 let appState = cloneState(DEFAULT_STATE);
@@ -167,6 +172,9 @@ function bindEvents() {
   elements.workspaceTabs.addEventListener("click", handleWorkspaceTabClick);
   elements.searchInput.addEventListener("input", renderTaskList);
   elements.statusFilter.addEventListener("change", renderTaskList);
+  elements.reportFromInput.addEventListener("change", renderTimeReport);
+  elements.reportToInput.addEventListener("change", renderTimeReport);
+  elements.reportUserFilter.addEventListener("change", renderTimeReport);
   elements.syncButton.addEventListener("click", handleManualSync);
   elements.settingsButton.addEventListener("click", requestDatabasePassword);
   elements.unlockDatabaseButton.addEventListener("click", unlockDatabaseSettings);
@@ -735,10 +743,12 @@ function render() {
 
   renderWorkspacePages();
   renderAssigneeOptions();
+  renderReportUserOptions();
   renderStats();
   renderTaskList();
   renderAdminLogs();
   renderUserStats();
+  renderTimeReport();
 }
 
 function renderWorkspacePages() {
@@ -756,6 +766,23 @@ function renderAssigneeOptions() {
   elements.assigneeInput.innerHTML = users
     .map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.name)} (${escapeHtml(user.username)})</option>`)
     .join("");
+}
+
+function renderReportUserOptions() {
+  if (!elements.reportUserFilter) {
+    return;
+  }
+
+  const users = appState.users.filter((user) => user.role === "user");
+  const previousValue = elements.reportUserFilter.value;
+  elements.reportUserFilter.innerHTML = [
+    `<option value="all">Tất cả user</option>`,
+    ...users.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.name)} (${escapeHtml(user.username)})</option>`),
+  ].join("");
+
+  if (previousValue && [...elements.reportUserFilter.options].some((option) => option.value === previousValue)) {
+    elements.reportUserFilter.value = previousValue;
+  }
 }
 
 function renderStats() {
@@ -1027,6 +1054,86 @@ function renderOverdueTaskTable(tasks) {
   `;
 }
 
+function renderTimeReport() {
+  if (!elements.reportSummaryTable || !elements.reportTaskTable || !currentUser) {
+    return;
+  }
+
+  const rows = getTimeReportRows();
+  const summaryRows = buildTimeReportSummary(rows);
+
+  elements.reportSummaryTable.innerHTML = summaryRows.length
+    ? renderTimeReportSummaryTable(summaryRows)
+    : `<p class="empty-state">Chưa có dữ liệu trong khoảng thời gian đã chọn.</p>`;
+
+  elements.reportTaskTable.innerHTML = rows.length
+    ? renderTimeReportTaskTable(rows)
+    : `<p class="empty-state">Không có đầu việc phù hợp.</p>`;
+}
+
+function renderTimeReportSummaryTable(rows) {
+  return `
+    <table class="data-table report-summary-table">
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Tổng đầu việc</th>
+          <th>Hoàn thành</th>
+          <th>Quá hạn</th>
+          <th>Đang làm</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map((row) => `
+          <tr>
+            <td>${escapeHtml(row.userName)}</td>
+            <td>${row.total}</td>
+            <td>${row.completed}</td>
+            <td>${row.overdue}</td>
+            <td>${row.active}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderTimeReportTaskTable(rows) {
+  return `
+    <table class="data-table report-task-table">
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Nội dung đầu việc</th>
+          <th>Bắt đầu</th>
+          <th>Hạn</th>
+          <th>Tiến độ</th>
+          <th>Trạng thái</th>
+          <th>Hoàn thành ngày</th>
+          <th>Ghi chú mới nhất</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map((row) => `
+          <tr>
+            <td>${escapeHtml(row.userName)}</td>
+            <td>
+              <strong>${escapeHtml(row.title)}</strong>
+              ${row.description ? `<p class="table-subtext">${escapeHtml(row.description)}</p>` : ""}
+            </td>
+            <td>${formatMaybeDate(row.startDate)}</td>
+            <td>${formatMaybeDate(row.dueDate)}</td>
+            <td>${row.progress}%</td>
+            <td><span class="pill ${escapeHtml(row.statusKey)}">${escapeHtml(row.statusLabel)}</span></td>
+            <td>${row.completedAt ? formatMaybeDateTime(row.completedAt) : "Chưa hoàn thành"}</td>
+            <td>${escapeHtml(row.latestNote || "")}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
 function getVisibleTasks() {
   if (!currentUser) {
     return [];
@@ -1061,6 +1168,120 @@ function buildUserStats() {
       overdueTasks,
     };
   });
+}
+
+function getTimeReportRows() {
+  const fromDate = parseDateOnly(elements.reportFromInput.value);
+  const toDate = parseDateOnly(elements.reportToInput.value);
+  const selectedUserId = isAdmin() ? elements.reportUserFilter.value : currentUser.id;
+  const taskRecords = getTaskRecordsForStats();
+
+  return taskRecords
+    .filter((task) => {
+      if (selectedUserId && selectedUserId !== "all" && task.assigneeId !== selectedUserId) {
+        return false;
+      }
+
+      if (!isAdmin() && task.assigneeId !== currentUser.id) {
+        return false;
+      }
+
+      return isTaskInReportRange(task, fromDate, toDate);
+    })
+    .map(createTimeReportRow)
+    .sort((a, b) => {
+      const byUser = a.userName.localeCompare(b.userName, "vi");
+      if (byUser !== 0) {
+        return byUser;
+      }
+
+      return new Date(a.dueDate || "9999-12-31") - new Date(b.dueDate || "9999-12-31");
+    });
+}
+
+function createTimeReportRow(task) {
+  const user = findUser(task.assigneeId);
+  const completedAt = getTaskCompletionDate(task);
+  const status = getReportTaskStatus(task, completedAt);
+  const latestUpdate = getLatestTaskUpdate(task.id);
+
+  return {
+    id: task.id,
+    userId: task.assigneeId,
+    userName: user?.name || user?.username || task.assigneeName || task.assigneeId || "Không rõ",
+    title: task.title || "Không rõ",
+    description: task.description || "",
+    startDate: task.startDate || "",
+    dueDate: task.dueDate || "",
+    progress: Number(task.progress || 0),
+    completedAt,
+    statusKey: status.key,
+    statusLabel: status.label,
+    latestNote: latestUpdate?.note || "",
+  };
+}
+
+function buildTimeReportSummary(rows) {
+  const summaryByUser = new Map();
+
+  rows.forEach((row) => {
+    const current = summaryByUser.get(row.userId) || {
+      userId: row.userId,
+      userName: row.userName,
+      total: 0,
+      completed: 0,
+      overdue: 0,
+      active: 0,
+    };
+
+    current.total += 1;
+    if (row.completedAt) {
+      current.completed += 1;
+    }
+    if (row.statusKey === "overdue" || row.statusKey === "done-overdue") {
+      current.overdue += 1;
+    }
+    if (!row.completedAt) {
+      current.active += 1;
+    }
+
+    summaryByUser.set(row.userId, current);
+  });
+
+  return Array.from(summaryByUser.values()).sort((a, b) => a.userName.localeCompare(b.userName, "vi"));
+}
+
+function isTaskInReportRange(task, fromDate, toDate) {
+  const dueDate = parseDateOnly(task.dueDate);
+  if (!dueDate) {
+    return false;
+  }
+
+  if (fromDate && endOfDay(dueDate) < fromDate) {
+    return false;
+  }
+
+  if (toDate && dueDate > endOfDay(toDate)) {
+    return false;
+  }
+
+  return true;
+}
+
+function getReportTaskStatus(task, completedAt) {
+  if (completedAt) {
+    return isTaskEverOverdue({ ...task, completedAt })
+      ? { key: "done-overdue", label: "Hoàn thành quá hạn" }
+      : { key: "done", label: "Hoàn thành" };
+  }
+
+  return getTaskStatus(task);
+}
+
+function getLatestTaskUpdate(taskId) {
+  return (appState.updates || [])
+    .filter((update) => update.taskId === taskId)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
 }
 
 function getTaskRecordsForStats() {
@@ -1124,7 +1345,7 @@ function getTaskCompletionDateFromLogs(taskId) {
 function getTaskCompletionDateFromUpdates(taskId) {
   const completionUpdate = (appState.updates || [])
     .filter((update) => update.taskId === taskId && Number(update.progress || 0) >= 100)
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))[0];
 
   return completionUpdate?.createdAt || "";
 }
