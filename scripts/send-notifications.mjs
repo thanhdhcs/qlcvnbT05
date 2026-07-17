@@ -29,6 +29,8 @@ async function main() {
   ]);
 
   const usersById = new Map(users.map((user) => [user.id, user]));
+  await saveOverdueTaskLogs(accessToken, tasks, usersById);
+
   const alerts = tasks.flatMap((task) => buildAlerts(task, usersById.get(task.assigneeId)));
 
   if (!alerts.length) {
@@ -63,6 +65,36 @@ async function main() {
   }
 
   console.log(`Done. Sent: ${sentCount}. Skipped: ${skippedCount}.`);
+}
+
+async function saveOverdueTaskLogs(accessToken, tasks, usersById) {
+  let savedCount = 0;
+
+  for (const task of tasks) {
+    if (Number(task.progress || 0) >= 100 || getDaysRemaining(task.dueDate) >= 0) {
+      continue;
+    }
+
+    const assignee = usersById.get(task.assigneeId);
+    const taskLog = createTaskLog("task-overdue", task, assignee, {
+      id: `${task.id}_task-overdue`,
+      actorId: "system",
+      actorName: "Hệ thống",
+      note: "Công việc quá hạn và chưa hoàn thành.",
+    });
+
+    const alreadyLogged = await documentExists(accessToken, `taskLogs/${taskLog.id}`);
+    if (alreadyLogged) {
+      continue;
+    }
+
+    await saveTaskLog(accessToken, taskLog);
+    savedCount += 1;
+  }
+
+  if (savedCount > 0) {
+    console.log(`Saved ${savedCount} overdue KPI log(s).`);
+  }
 }
 
 function buildAlerts(task, assignee) {
@@ -117,6 +149,31 @@ function createAlert(type, task, assignee, title, dateKey = "") {
     assignee,
     title,
     message: messageLines.join("\n"),
+  };
+}
+
+function createTaskLog(action, task, assignee, extra = {}) {
+  const createdAt = extra.createdAt || new Date().toISOString();
+
+  return {
+    id: extra.id || `${task.id}_${action}`,
+    action,
+    taskId: task.id,
+    taskTitle: task.title,
+    taskDescription: task.description || "",
+    assigneeId: task.assigneeId,
+    assigneeName: assignee?.name || assignee?.username || task.assigneeId || "Chưa rõ",
+    actorId: extra.actorId || "system",
+    actorName: extra.actorName || "Hệ thống",
+    dueDate: task.dueDate,
+    startDate: task.startDate,
+    progress: Number(task.progress || 0),
+    createdAt,
+    eventDate: toDateKey(new Date(createdAt), CONFIG.timeZone),
+    completedAt: extra.completedAt || null,
+    deletedAt: extra.deletedAt || null,
+    note: extra.note || "",
+    taskSnapshot: task,
   };
 }
 
@@ -284,6 +341,15 @@ async function saveNotificationLog(accessToken, alert, sentChannels) {
         sentAt: now,
         createdAt: now,
       }),
+    }),
+  });
+}
+
+async function saveTaskLog(accessToken, taskLog) {
+  await firestoreFetch(accessToken, `${FIRESTORE_BASE_URL}/taskLogs/${taskLog.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      fields: encodeObject(taskLog),
     }),
   });
 }
