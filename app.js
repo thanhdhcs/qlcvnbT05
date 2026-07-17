@@ -98,6 +98,9 @@ const elements = {
   roleLabel: document.querySelector("#roleLabel"),
   welcomeTitle: document.querySelector("#welcomeTitle"),
   statsGrid: document.querySelector("#statsGrid"),
+  workspaceTabs: document.querySelector("#workspaceTabs"),
+  workspacePages: document.querySelectorAll("[data-page-panel]"),
+  adminOnlyTabs: document.querySelectorAll(".admin-only"),
   adminPanel: document.querySelector("#adminPanel"),
   taskForm: document.querySelector("#taskForm"),
   taskMessage: document.querySelector("#taskMessage"),
@@ -110,12 +113,15 @@ const elements = {
   searchInput: document.querySelector("#searchInput"),
   statusFilter: document.querySelector("#statusFilter"),
   taskList: document.querySelector("#taskList"),
+  adminLogList: document.querySelector("#adminLogList"),
+  userStatsList: document.querySelector("#userStatsList"),
 };
 
 let appState = cloneState(DEFAULT_STATE);
 let currentUser = null;
 let lastExitSyncAt = 0;
 let firebaseBackend = null;
+let activePage = "tasks";
 
 initializeApp();
 
@@ -158,6 +164,7 @@ function bindEvents() {
   elements.taskList.addEventListener("submit", handleTaskUpdate);
   elements.taskList.addEventListener("click", handleTaskAction);
   elements.taskList.addEventListener("input", handleProgressPreview);
+  elements.workspaceTabs.addEventListener("click", handleWorkspaceTabClick);
   elements.searchInput.addEventListener("input", renderTaskList);
   elements.statusFilter.addEventListener("change", renderTaskList);
   elements.syncButton.addEventListener("click", handleManualSync);
@@ -406,12 +413,17 @@ async function handleCreateTask(event) {
     createdAt: now,
     updatedAt: now,
   };
+  const taskLog = createTaskLog("task-created", task, currentUser, {
+    id: `${task.id}_task-created`,
+    note: "Admin tạo và giao công việc mới.",
+  });
 
   try {
     appState.tasks.unshift(task);
+    addLocalTaskLog(taskLog);
     if (isFirebaseMode()) {
       saveLocalState(normalizeState(appState));
-      await createFirebaseTask(task);
+      await createFirebaseTask(task, taskLog);
     } else {
       await persistState();
     }
@@ -423,6 +435,20 @@ async function handleCreateTask(event) {
     console.error("Không tạo được công việc", error);
     showMessage(elements.taskMessage, "Không lưu được công việc. Vui lòng thử lại.", "error");
   }
+}
+
+function handleWorkspaceTabClick(event) {
+  const button = event.target.closest("[data-page]");
+  if (!button) {
+    return;
+  }
+
+  if (button.dataset.page === "adminLogs" && !isAdmin()) {
+    return;
+  }
+
+  activePage = button.dataset.page;
+  renderWorkspacePages();
 }
 
 async function handleTaskUpdate(event) {
@@ -697,14 +723,32 @@ function render() {
     return;
   }
 
+  if (!isAdmin() && activePage === "adminLogs") {
+    activePage = "tasks";
+  }
+
   elements.roleLabel.textContent = currentUser.role === "admin" ? "Admin" : "User";
   elements.welcomeTitle.textContent = `Xin chào, ${currentUser.name}`;
   elements.adminPanel.classList.toggle("hidden", currentUser.role !== "admin");
   elements.taskScopeLabel.textContent = currentUser.role === "admin" ? "Tất cả công việc" : "Công việc của tôi";
+  elements.adminOnlyTabs.forEach((tab) => tab.classList.toggle("hidden", !isAdmin()));
 
+  renderWorkspacePages();
   renderAssigneeOptions();
   renderStats();
   renderTaskList();
+  renderAdminLogs();
+  renderUserStats();
+}
+
+function renderWorkspacePages() {
+  elements.workspacePages.forEach((page) => {
+    page.classList.toggle("hidden", page.dataset.pagePanel !== activePage);
+  });
+
+  elements.workspaceTabs.querySelectorAll("[data-page]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.page === activePage);
+  });
 }
 
 function renderAssigneeOptions() {
@@ -866,6 +910,123 @@ function renderTimelineItem(update) {
   `;
 }
 
+function renderAdminLogs() {
+  if (!elements.adminLogList || !isAdmin()) {
+    return;
+  }
+
+  const logs = (appState.taskLogs || [])
+    .filter((log) => isAdminActionLog(log))
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+  if (!logs.length) {
+    elements.adminLogList.innerHTML = `<p class="empty-state">Chưa có log hành động admin.</p>`;
+    return;
+  }
+
+  elements.adminLogList.innerHTML = `
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Thời gian</th>
+          <th>Admin</th>
+          <th>Hành động</th>
+          <th>Công việc</th>
+          <th>Người phụ trách</th>
+          <th>Hạn</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${logs.map(renderAdminLogRow).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderAdminLogRow(log) {
+  return `
+    <tr>
+      <td>${formatMaybeDateTime(log.createdAt)}</td>
+      <td>${escapeHtml(log.actorName || "Admin")}</td>
+      <td><span class="pill">${escapeHtml(getTaskLogLabel(log.action))}</span></td>
+      <td>${escapeHtml(log.taskTitle || "Không rõ")}</td>
+      <td>${escapeHtml(log.assigneeName || "Không rõ")}</td>
+      <td>${formatMaybeDate(log.dueDate)}</td>
+    </tr>
+  `;
+}
+
+function renderUserStats() {
+  if (!elements.userStatsList || !currentUser) {
+    return;
+  }
+
+  const stats = buildUserStats();
+  const visibleStats = isAdmin()
+    ? stats
+    : stats.filter((item) => item.user.id === currentUser.id);
+
+  if (!visibleStats.length) {
+    elements.userStatsList.innerHTML = `<p class="empty-state">Chưa có dữ liệu thống kê.</p>`;
+    return;
+  }
+
+  elements.userStatsList.innerHTML = visibleStats.map(renderUserStatCard).join("");
+}
+
+function renderUserStatCard(stat) {
+  return `
+    <article class="user-stat-card">
+      <div class="user-stat-header">
+        <div>
+          <h4>${escapeHtml(stat.user.name || stat.user.username || "Người dùng")}</h4>
+          <p>${escapeHtml(stat.user.username || stat.user.id)}</p>
+        </div>
+        <div class="user-stat-metrics">
+          <div><strong>${stat.totalTasks}</strong><span>Tổng việc</span></div>
+          <div><strong>${stat.completedTasks}</strong><span>Hoàn thành</span></div>
+          <div><strong>${stat.overdueTasks.length}</strong><span>Đã quá hạn</span></div>
+        </div>
+      </div>
+      <div class="overdue-detail">
+        <h5>Công việc đã quá hạn</h5>
+        ${
+          stat.overdueTasks.length
+            ? renderOverdueTaskTable(stat.overdueTasks)
+            : `<p class="empty-state">Không có công việc quá hạn.</p>`
+        }
+      </div>
+    </article>
+  `;
+}
+
+function renderOverdueTaskTable(tasks) {
+  return `
+    <div class="data-table-wrap compact-table">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Công việc</th>
+            <th>Hạn</th>
+            <th>Trạng thái</th>
+            <th>Hoàn thành ngày</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${tasks.map((task) => `
+            <tr>
+              <td>${escapeHtml(task.title || "Không rõ")}</td>
+              <td>${formatMaybeDate(task.dueDate)}</td>
+              <td>${escapeHtml(task.completedAt ? "Đã hoàn thành" : "Chưa hoàn thành")}</td>
+              <td>${task.completedAt ? formatMaybeDateTime(task.completedAt) : "Chưa hoàn thành"}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function getVisibleTasks() {
   if (!currentUser) {
     return [];
@@ -876,6 +1037,111 @@ function getVisibleTasks() {
   }
 
   return appState.tasks.filter((task) => task.assigneeId === currentUser.id);
+}
+
+function buildUserStats() {
+  const taskRecords = getTaskRecordsForStats();
+  const users = appState.users.filter((user) => isAdmin() ? user.role === "user" : user.id === currentUser.id);
+
+  return users.map((user) => {
+    const userTasks = taskRecords.filter((task) => task.assigneeId === user.id);
+    const completedTasks = userTasks.filter((task) => getTaskCompletionDate(task)).length;
+    const overdueTasks = userTasks
+      .filter((task) => isTaskEverOverdue(task))
+      .map((task) => ({
+        ...task,
+        completedAt: getTaskCompletionDate(task),
+      }))
+      .sort((a, b) => new Date(a.dueDate || 0) - new Date(b.dueDate || 0));
+
+    return {
+      user,
+      totalTasks: userTasks.length,
+      completedTasks,
+      overdueTasks,
+    };
+  });
+}
+
+function getTaskRecordsForStats() {
+  const tasksById = new Map();
+
+  appState.tasks.forEach((task) => {
+    tasksById.set(task.id, { ...task });
+  });
+
+  (appState.taskLogs || []).forEach((log) => {
+    const snapshot = log.taskSnapshot && typeof log.taskSnapshot === "object" ? log.taskSnapshot : null;
+    if (!snapshot || !log.taskId) {
+      return;
+    }
+
+    const currentTask = tasksById.get(log.taskId) || {};
+    tasksById.set(log.taskId, {
+      ...snapshot,
+      ...currentTask,
+      id: log.taskId,
+      title: currentTask.title || snapshot.title || log.taskTitle,
+      assigneeId: currentTask.assigneeId || snapshot.assigneeId || log.assigneeId,
+      dueDate: currentTask.dueDate || snapshot.dueDate || log.dueDate,
+      completedAt: currentTask.completedAt || snapshot.completedAt || getTaskCompletionDateFromLogs(log.taskId),
+    });
+  });
+
+  return Array.from(tasksById.values());
+}
+
+function isTaskEverOverdue(task) {
+  const dueDate = parseDateOnly(task.dueDate);
+  if (!dueDate) {
+    return false;
+  }
+
+  const completionDate = getTaskCompletionDate(task);
+  if (completionDate) {
+    return new Date(completionDate) > endOfDay(dueDate);
+  }
+
+  const hasOverdueLog = (appState.taskLogs || []).some((log) => (
+    log.taskId === task.id && (log.action === "task-overdue" || log.action === "overdue-task-completed")
+  ));
+
+  return hasOverdueLog || endOfDay(dueDate) < new Date();
+}
+
+function getTaskCompletionDate(task) {
+  return task.completedAt || getTaskCompletionDateFromLogs(task.id) || getTaskCompletionDateFromUpdates(task.id);
+}
+
+function getTaskCompletionDateFromLogs(taskId) {
+  const completionLog = (appState.taskLogs || [])
+    .filter((log) => log.taskId === taskId && log.completedAt)
+    .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt))[0];
+
+  return completionLog?.completedAt || "";
+}
+
+function getTaskCompletionDateFromUpdates(taskId) {
+  const completionUpdate = (appState.updates || [])
+    .filter((update) => update.taskId === taskId && Number(update.progress || 0) >= 100)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
+
+  return completionUpdate?.createdAt || "";
+}
+
+function isAdminActionLog(log) {
+  return ["task-created", "task-deleted"].includes(log.action);
+}
+
+function getTaskLogLabel(action) {
+  const labels = {
+    "task-created": "Tạo công việc",
+    "task-deleted": "Xoá công việc",
+    "task-overdue": "Ghi nhận quá hạn",
+    "overdue-task-completed": "Hoàn thành việc quá hạn",
+  };
+
+  return labels[action] || action || "Không rõ";
 }
 
 function getTaskStatus(task) {
@@ -1013,9 +1279,19 @@ async function saveFirebaseState(state) {
   await Promise.all([...tasks, ...updates, ...taskLogs]);
 }
 
-async function createFirebaseTask(task) {
-  const { doc, setDoc } = firebaseBackend.firestoreModule;
+async function createFirebaseTask(task, taskLog = null) {
+  const { doc, setDoc, writeBatch } = firebaseBackend.firestoreModule;
+
+  if (writeBatch && taskLog) {
+    const batch = writeBatch(firebaseBackend.db);
+    batch.set(doc(firebaseBackend.db, "tasks", task.id), sanitizeFirestoreRecord(task));
+    batch.set(doc(firebaseBackend.db, "taskLogs", taskLog.id), sanitizeFirestoreRecord(taskLog), { merge: true });
+    await batch.commit();
+    return;
+  }
+
   await setDoc(doc(firebaseBackend.db, "tasks", task.id), sanitizeFirestoreRecord(task));
+  await saveFirebaseTaskLog(taskLog);
 }
 
 async function saveFirebaseTaskUpdate(task, update, taskLog = null) {
@@ -1351,6 +1627,23 @@ function formatDate(value) {
   }).format(new Date(`${value}T00:00:00`));
 }
 
+function formatMaybeDate(value) {
+  if (!value) {
+    return "Chưa có";
+  }
+
+  const date = value.includes("T") ? new Date(value) : new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return "Chưa có";
+  }
+
+  return new Intl.DateTimeFormat("vi-VN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(date);
+}
+
 function formatDateTime(value) {
   return new Intl.DateTimeFormat("vi-VN", {
     day: "2-digit",
@@ -1359,6 +1652,34 @@ function formatDateTime(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatMaybeDateTime(value) {
+  if (!value) {
+    return "Chưa có";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Chưa có";
+  }
+
+  return new Intl.DateTimeFormat("vi-VN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function parseDateOnly(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function toDateInput(date) {

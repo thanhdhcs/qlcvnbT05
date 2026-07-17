@@ -81,60 +81,88 @@
             <div class="stats-grid" id="statsGrid"></div>
           </div>
 
-          <section class="admin-panel hidden" id="adminPanel" aria-labelledby="createTaskTitle">
-            <div class="section-heading">
-              <div>
-                <p class="eyebrow">Admin</p>
-                <h3 id="createTaskTitle">Tạo công việc mới</h3>
-              </div>
-            </div>
+          <nav class="workspace-tabs" id="workspaceTabs" aria-label="Điều hướng chức năng">
+            <button class="tab-button active" type="button" data-page="tasks">Công việc</button>
+            <button class="tab-button admin-only" type="button" data-page="adminLogs">Log admin</button>
+            <button class="tab-button" type="button" data-page="userStats">Thống kê user</button>
+          </nav>
 
-            <form class="task-form" id="taskForm">
-              <label>
-                Tên công việc
-                <input id="taskTitleInput" name="title" required maxlength="120">
-              </label>
-              <label>
-                Giao cho
-                <select id="assigneeInput" name="assignee" required></select>
-              </label>
-              <label>
-                Ngày bắt đầu
-                <input id="startDateInput" name="startDate" type="date" required>
-              </label>
-              <label>
-                Hạn hoàn thành
-                <input id="dueDateInput" name="dueDate" type="date" required>
-              </label>
-              <label class="wide-field">
-                Mô tả
-                <textarea id="descriptionInput" name="description" rows="3" maxlength="500"></textarea>
-              </label>
-              <div class="form-actions">
-                <button class="primary-button" type="submit">Tạo công việc</button>
-                <p class="form-message" id="taskMessage" role="status"></p>
+          <section class="workspace-page" id="tasksPage" data-page-panel="tasks">
+            <section class="admin-panel hidden" id="adminPanel" aria-labelledby="createTaskTitle">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Admin</p>
+                  <h3 id="createTaskTitle">Tạo công việc mới</h3>
+                </div>
               </div>
-            </form>
+
+              <form class="task-form" id="taskForm">
+                <label>
+                  Tên công việc
+                  <input id="taskTitleInput" name="title" required maxlength="120">
+                </label>
+                <label>
+                  Giao cho
+                  <select id="assigneeInput" name="assignee" required></select>
+                </label>
+                <label>
+                  Ngày bắt đầu
+                  <input id="startDateInput" name="startDate" type="date" required>
+                </label>
+                <label>
+                  Hạn hoàn thành
+                  <input id="dueDateInput" name="dueDate" type="date" required>
+                </label>
+                <label class="wide-field">
+                  Mô tả
+                  <textarea id="descriptionInput" name="description" rows="3" maxlength="500"></textarea>
+                </label>
+                <div class="form-actions">
+                  <button class="primary-button" type="submit">Tạo công việc</button>
+                  <p class="form-message" id="taskMessage" role="status"></p>
+                </div>
+              </form>
+            </section>
+
+            <section aria-labelledby="taskListTitle">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow" id="taskScopeLabel">Danh sách</p>
+                  <h3 id="taskListTitle">Công việc</h3>
+                </div>
+                <div class="filter-row">
+                  <input id="searchInput" type="search" placeholder="Tìm công việc">
+                  <select id="statusFilter">
+                    <option value="all">Tất cả trạng thái</option>
+                    <option value="overdue">Quá hạn</option>
+                    <option value="due-soon">Sắp hết hạn</option>
+                    <option value="active">Đang làm</option>
+                    <option value="done">Hoàn thành</option>
+                  </select>
+                </div>
+              </div>
+              <div class="task-list" id="taskList"></div>
+            </section>
           </section>
 
-          <section aria-labelledby="taskListTitle">
+          <section class="workspace-page hidden" id="adminLogsPage" data-page-panel="adminLogs" aria-labelledby="adminLogsTitle">
             <div class="section-heading">
               <div>
-                <p class="eyebrow" id="taskScopeLabel">Danh sách</p>
-                <h3 id="taskListTitle">Công việc</h3>
-              </div>
-              <div class="filter-row">
-                <input id="searchInput" type="search" placeholder="Tìm công việc">
-                <select id="statusFilter">
-                  <option value="all">Tất cả trạng thái</option>
-                  <option value="overdue">Quá hạn</option>
-                  <option value="due-soon">Sắp hết hạn</option>
-                  <option value="active">Đang làm</option>
-                  <option value="done">Hoàn thành</option>
-                </select>
+                <p class="eyebrow">Nhật ký</p>
+                <h3 id="adminLogsTitle">Log hành động admin</h3>
               </div>
             </div>
-            <div class="task-list" id="taskList"></div>
+            <div class="data-table-wrap" id="adminLogList"></div>
+          </section>
+
+          <section class="workspace-page hidden" id="userStatsPage" data-page-panel="userStats" aria-labelledby="userStatsTitle">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">KPI</p>
+                <h3 id="userStatsTitle">Thống kê công việc của user</h3>
+              </div>
+            </div>
+            <div class="user-stats-list" id="userStatsList"></div>
           </section>
         </section>
       </main>
